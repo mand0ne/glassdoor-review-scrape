@@ -1,4 +1,5 @@
 SCHEMA = [
+    'review_id',
     'date',
     'employee_title',
     'location',

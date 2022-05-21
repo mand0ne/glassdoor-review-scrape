@@ -1,14 +1,35 @@
+from argparse import ArgumentParser
 import logging.config
 import time
 
 import numpy as np
 import pandas as pd
+import math
+
 import selenium
 from selenium import webdriver as wd
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 
 from schema import SCHEMA
+
+parser = ArgumentParser()
+parser.add_argument('-u', '--url', help='URL prve stranice Glassdoor recenzija kompanije')
+parser.add_argument('-f', '--file', help='Izlazna CSV datoteka')
+parser.add_argument('--headless', action='store_true', help='Pokreni Chrome u headless rezim')
+parser.add_argument('-e', '--email', help='E-mail za Glassdoor')
+parser.add_argument('-p', '--password', help='Lozinka za Glassdoor')
+parser.add_argument('-l', '--limit', default=1000, action='store', type=int, help='Recenzija za dohvatiti')
+args = parser.parse_args()
+
+if not args.url:
+    raise Exception('URL prve stranice recenzija nije naveden!')
+if not args.file:
+    raise Exception('Izlazna CSV datoteka nije navedena!')
+if not args.email:
+    raise Exception('Korisnicki e-mail za GD nije naveden!')
+if not args.password:
+    raise Exception('Korisnicka lozinka za GD nije navedena!')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -21,20 +42,23 @@ logging.getLogger('selenium').setLevel(logging.CRITICAL)
 logging.getLogger('selenium').setLevel(logging.CRITICAL)
 
 # Konfiguracija
-username = 'USERNAME'  # Podaci za prijavu na Glassdoor
-password = 'PASSWORD'
-headless_mode = True  # Sakrij Chrome dok scrapeas, za debug stavit False, pratit sta se desava
+username = args.email  # Podaci za prijavu na Glassdoor
+password = args.password
+headless_mode = args.headless  # Sakrij Chrome dok scrapeas, za debug stavit False, pratit sta se desava
 
 # Direktan URL do prve stranice recenzija!
 # Na google ukucati npr. Amazon Glassdoor Reviews i trebao bi to odmah biti prvi url koji izadje
-url = 'https://www.glassdoor.com/Reviews/Netflix-Reviews-E11891.htm'
+url = args.url
+limit = args.limit
+filename = args.file
 
-limit = 25
-filename = 'netflix_reviews.csv'
+low_order_filter = "?sort.sortType=OR&sort.ascending=true&filter.iso3Language=eng"
+high_order_filter = "?sort.sortType=OR&sort.ascending=false&filter.iso3Language=eng"
+popular_order_filter = "?filter.iso3Language=eng"
 
 
 def scrape(field, review, author):
-    def scrape_date(review):
+    def scrape_review_date(review):
         try:
             res = author.find_element(by=By.CLASS_NAME, value='authorJobTitle').text.split('-')[0]
             res = res.replace(',', '').strip()
@@ -42,7 +66,7 @@ def scrape(field, review, author):
             res = np.nan
         return res
 
-    def scrape_emp_title(review):
+    def scrape_employee_title(review):
         if 'Anonymous Employee' not in review.text:
             try:
                 res = author.find_element(by=By.CLASS_NAME, value='authorJobTitle').text.split('-')[1]
@@ -66,8 +90,14 @@ def scrape(field, review, author):
             res = np.nan
         return res
 
-    def scrape_rev_title(review):
-        return review.find_element(by=By.CLASS_NAME, value='reviewLink').text.strip('"')
+    def scrape_review_title(review):
+        return review.find_element(by=By.CLASS_NAME, value='reviewLink').text.strip()
+
+    def scrape_review_id(review):
+        review_id = review.find_element(by=By.CLASS_NAME, value='reviewLink').get_attribute("href").split('/')[4]
+        review_id = review_id.split('-')[-1]
+        review_id = review_id[: review_id.find(".htm")]
+        return review_id
 
     def expand_show_more(section):
         try:
@@ -81,10 +111,9 @@ def scrape(field, review, author):
             pros = review.find_element(by=By.CLASS_NAME, value='gdReview')
             expand_show_more(pros)
 
-            pro_index = pros.text.find('Pros')
-            con_index = pros.text.find('Cons')
-            res = pros.text[pro_index + 5: con_index]
-            res = res.strip()
+            pro_index = pros.text.find('\nPros')
+            con_index = pros.text.find('\nCons')
+            res = pros.text[pro_index + 5: con_index].strip()
         except Exception:
             res = np.nan
         return res
@@ -94,14 +123,13 @@ def scrape(field, review, author):
             cons = review.find_element(by=By.CLASS_NAME, value='gdReview')
             expand_show_more(cons)
 
-            con_index = cons.text.find('Cons')
-            continue_index = cons.text.find('Advice to Management')
+            con_index = cons.text.find('\nCons')
+            continue_index = cons.text.find('\nAdvice to Management')
             if continue_index == -1:
                 help_container = review.find_element(by=By.CLASS_NAME,
                                                      value='common__EiReviewDetailsStyle__socialHelpfulcontainer')
                 continue_index = cons.text.find(help_container.text)
-            res = cons.text[con_index + 5: continue_index]
-            res = res.strip()
+            res = cons.text[con_index + 5: continue_index].strip()
         except Exception:
             res = np.nan
         return res
@@ -135,11 +163,14 @@ def scrape(field, review, author):
         return res
 
     funcs = [
-        scrape_date,
-        scrape_emp_title,
+        scrape_review_id,
+        scrape_review_date,
+        scrape_employee_title,
         scrape_location,
-        scrape_rev_title,
+
+        scrape_review_title,
         scrape_overall_rating,
+
         scrape_pros,
         scrape_cons,
         scrape_advice
@@ -160,10 +191,10 @@ def extract_from_page():
     def extract_review(review):
         try:
             author = review.find_element(by=By.CLASS_NAME, value='authorInfo')
-        except:
-            return None  # Uracunaj recenzije koje su blokirane
-        res = {}
+        except Exception:
+            return None
 
+        res = {}
         for field in SCHEMA:
             res[field] = scrape(field, review, author)
 
@@ -173,14 +204,13 @@ def extract_from_page():
     logger.info(f'Izvlacim recenzije sa strane {page[0]}')
 
     res = pd.DataFrame([], columns=SCHEMA)
-
     reviews = browser.find_elements(by=By.CLASS_NAME, value='empReview')
     logger.info(f'Pronadjeno {len(reviews)} recenzija na strani {page[0]}')
 
-    # Osvjezi stranicu ako se nisu ucitale recenzije, ako opet faila gasi sve
+    # Osvjezi stranicu ako se nisu ucitale recenzije
     if len(reviews) < 1:
         browser.refresh()
-        time.sleep(5)
+        time.sleep(4)
         reviews = browser.find_elements(by=By.CLASS_NAME, value='empReview')
         logger.info(f'Pronadjeno {len(reviews)} recenzija na strani {page[0]}')
         if len(reviews) < 1:
@@ -190,7 +220,7 @@ def extract_from_page():
         if not is_featured(review):
             data = extract_review(review)
             if data is not None:
-                logger.info(f'Dohvaceni podaci za "{data["review_title"]}"({data["date"]})')
+                logger.info(f'Dohvaceni podaci za "{data["review_title"]}" ({data["date"]})')
                 res.loc[idx[0]] = data
             else:
                 logger.info('Odbacujem blokiranu recenziju')
@@ -199,26 +229,6 @@ def extract_from_page():
         idx[0] = idx[0] + 1
 
     return res
-
-
-def more_pages():
-    try:
-        current = browser.find_element(by=By.CLASS_NAME, value='selected')
-        pages = browser.find_element(by=By.CLASS_NAME, value='pageContainer').text.split()
-        if int(pages[-1]) != int(current.text):
-            return True
-        else:
-            return False
-    except selenium.common.exceptions.NoSuchElementException:
-        return False
-
-
-def go_to_next_page():
-    logger.info(f'Prelazim na stranicu {page[0] + 1}')
-    next_ = browser.find_element(by=By.CLASS_NAME, value='nextButton')
-    ActionChains(browser).click(next_).perform()
-    time.sleep(5)  # Pricekaj jos malko
-    page[0] = page[0] + 1
 
 
 def sign_in():
@@ -257,42 +267,94 @@ def get_current_page():
     return int(current.text)
 
 
-browser = get_browser()
-page = [1]
-idx = [0]
-valid_page = [True]
+def more_pages():
+    try:
+        current = browser.find_element(by=By.CLASS_NAME, value='selected')
+        pages = browser.find_element(by=By.CLASS_NAME, value='pageContainer').text.split()
+        if int(pages[-1]) != int(current.text):
+            return True
+        else:
+            return False
+    except selenium.common.exceptions.NoSuchElementException:
+        return False
 
 
-def main():
-    start = time.time()
+def go_to_next_page():
+    logger.info(f'Prelazim na stranicu {page[0] + 1}')
+    next_ = browser.find_element(by=By.CLASS_NAME, value='nextButton')
+    ActionChains(browser).click(next_).perform()
+    time.sleep(4)  # Pricekaj jos malko
+    page[0] = page[0] + 1
+
+
+def main(res_df, limit):
     logger.info(f'Scrapeam do {limit} recenzija.')
 
-    sign_in()
-    browser.get(url)
     page[0] = get_current_page()
     logger.info(f'Pocinjem od strane {page[0]:,}.')
     time.sleep(1)
 
     reviews_df = extract_from_page()
-    res = pd.DataFrame([], columns=SCHEMA)
-    res = res.append(reviews_df)
-
+    res_df = pd.concat([res_df, reviews_df])
+    no_revs = 10
     while more_pages() and \
-            len(res) < limit and \
+            no_revs < limit and \
             valid_page[0]:
+        print(no_revs)
         go_to_next_page()
         try:
             reviews_df = extract_from_page()
-            res = res.append(reviews_df)
-        except:
+            res_df = pd.concat([res_df, reviews_df])
+            no_revs += 10
+        except Exception:
             break
 
-    logger.info(f'Zapisujem {len(res)} recenzija u fajl {filename}')
-    res.to_csv(filename, index=False, encoding='utf-8')
+    return res_df
+
+
+browser = get_browser()
+page = [1]
+idx = [0]
+valid_page = [True]
+
+if __name__ == '__main__':
+    start = time.time()
+
+    sign_in()
+    browser.get(url)
+
+    number_of_reviews = \
+        browser.find_element(by=By.XPATH, value='//h2[@data-test="overallReviewCount"]').text.split(' ')[4].lower()
+    if 'k' in number_of_reviews:
+        if '.' in number_of_reviews:
+            number_of_reviews = number_of_reviews.replace('k', '00').replace('.', '')
+        else:
+            number_of_reviews = number_of_reviews.replace('k', '000')
+    number_of_reviews = int(number_of_reviews.replace(',', ''))
+
+    limit = min(number_of_reviews, limit)
+    limit = math.floor(limit / 3)
+
+    res_df = pd.DataFrame([], columns=SCHEMA)
+
+    # Prvo scrape popularne, zatim sa najmanjom i zatim sa najvecom ocjenom, 1/3 raspodjela
+    next_url = url + popular_order_filter
+    browser.get(next_url)
+    logger.info("SCRAPE POPULAR")
+    res_df = main(res_df, limit)
+
+    next_url = url + low_order_filter
+    browser.get(next_url)
+    logger.info("SCRAPE LOW RATED")
+    res_df = main(res_df, limit)
+
+    next_url = url + high_order_filter
+    browser.get(next_url)
+    logger.info("SCRAPE HIGH RATED")
+    res_df = main(res_df, limit)
+
+    logger.info(f'Zapisujem {len(res_df)} recenzija u fajl {filename}')
+    res_df.to_csv(filename, index=False, encoding='utf-8')
 
     end = time.time()
     logger.info(f'Zavrseno za {end - start} sekundi')
-
-
-if __name__ == '__main__':
-    main()
