@@ -13,6 +13,7 @@ from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 
 from schema import SCHEMA
+from collections import Counter
 
 parser = ArgumentParser()
 parser.add_argument('-u', '--url', help='URL prve stranice Glassdoor recenzija kompanije')
@@ -373,10 +374,54 @@ def create_final_df():
 
     polarity_223_df['polarity'] = np.array(column_polarity_15)  # Push me in daddy
 
-    return pandas.DataFrame(data=polarity_223_df).to_csv('on_god_dataset.csv', index=False)
+    return pandas.DataFrame(data=polarity_223_df).to_csv('reviews_final.csv', index=False)
+
+
+def create_word_list(row):
+    return np.asarray(str(row['review']).split(" "))
+
+
+def split_words_for_tokenization(df):
+    df['review'] = df.apply(create_word_list, axis=1)
+    return pandas.DataFrame(data=df).to_csv('tokenized_reviews.csv', index=False)
+
+
+def preprocess(row):
+    row = row.replace("[", "")
+    row = row.replace("]", "")
+    row = row.replace("'", "")
+
+    return row
+
+
+def get_token_occurrences_for_row(row):
+    occrs = []
+    words_row = preprocess(row['review']).split(' ')
+
+    for word in words_row:
+        occrs.append(words_row.count(word))
+
+    return np.asarray(occrs)
+
+
+def create_occurrences_list(df):
+    df['occurrences'] = df.apply(get_token_occurrences_for_row, axis=1)
+    return df
+
+
+def create_bag_of_words(df):
+    count_vect = CountVectorizer()
+    X = count_vect.fit_transform(sentences)
+    return X.toarray(), count_vect.get_feature_names_out()
 
 
 if __name__ == '__main__':
-    on_god_dataset = create_final_df()
+    create_final_df()
+    df_reviews = pandas.read_csv('reviews_final.csv', delimiter=",")
 
-    print(on_god_dataset)
+    # Tokenize
+    split_words_for_tokenization(df_reviews)
+    df_tokenized = pandas.read_csv('tokenized_reviews.csv', delimiter=",")
+
+    # Create occurrences column in df
+    df_tokenized = create_occurrences_list(df_tokenized)
