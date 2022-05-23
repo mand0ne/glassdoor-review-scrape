@@ -3,6 +3,7 @@ import logging.config
 import time
 
 import numpy as np
+import pandas
 import pandas as pd
 import math
 
@@ -22,14 +23,14 @@ parser.add_argument('-p', '--password', help='Lozinka za Glassdoor')
 parser.add_argument('-l', '--limit', default=1000, action='store', type=int, help='Recenzija za dohvatiti')
 args = parser.parse_args()
 
-if not args.url:
-    raise Exception('URL prve stranice recenzija nije naveden!')
-if not args.file:
-    raise Exception('Izlazna CSV datoteka nije navedena!')
-if not args.email:
-    raise Exception('Korisnicki e-mail za GD nije naveden!')
-if not args.password:
-    raise Exception('Korisnicka lozinka za GD nije navedena!')
+# if not args.url:
+#     raise Exception('URL prve stranice recenzija nije naveden!')
+# if not args.file:
+#     raise Exception('Izlazna CSV datoteka nije navedena!')
+# if not args.email:
+#     raise Exception('Korisnicki e-mail za GD nije naveden!')
+# if not args.password:
+#     raise Exception('Korisnicka lozinka za GD nije navedena!')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -317,7 +318,8 @@ page = [1]
 idx = [0]
 valid_page = [True]
 
-if __name__ == '__main__':
+
+def old_main():
     start = time.time()
 
     sign_in()
@@ -358,3 +360,23 @@ if __name__ == '__main__':
 
     end = time.time()
     logger.info(f'Zavrseno za {end - start} sekundi')
+
+
+def create_final_df():
+    # company, review (od _223), polarity (od _15)
+
+    polarity_15_df = pandas.read_csv("reviews_individual_preprocessed_15_polarity.csv", delimiter=",")
+    polarity_223_df = pandas.read_csv("reviews_individual_preprocessed_223_polarity.csv", delimiter=",")
+
+    column_polarity_15 = polarity_15_df['polarity'].tolist()  # Extractuj me daddy
+    polarity_223_df.drop('polarity', inplace=True, axis=1)  # Obriši me daddy
+
+    polarity_223_df['polarity'] = np.array(column_polarity_15)  # Push me in daddy
+
+    return pandas.DataFrame(data=polarity_223_df).to_csv('on_god_dataset.csv', index=False)
+
+
+if __name__ == '__main__':
+    on_god_dataset = create_final_df()
+
+    print(on_god_dataset)
